@@ -1,145 +1,133 @@
-// Autobahn — a kanban board that lives in your markdown.
-// Zero dependencies. Your BACKLOG.md stays the single source of truth:
-// this server parses it into lanes, and a drag between lanes rewrites the
-// file (the whole ## CARD block moves, byte-for-byte). Commit as usual.
+// Autobahn — vault fork: a kanban board over a directory of markdown files.
+// Upstream (github.com/rams-design/autobahn) boards one BACKLOG.md with lanes
+// as ## headings. This fork boards LLMVault: each card is a FILE
+// (wiki/workblocks/*.md, wiki/projects/*.md) and the lane is the `status:`
+// frontmatter field. Dragging a card rewrites only that file's `status:`
+// (+ `updated:`) lines — the files stay the single source of truth, and any
+// LLM session can move cards by editing frontmatter.
 //
-//   node server.mjs [dir]        → http://localhost:4780
+//   node server.mjs [wikiDir]    → http://localhost:4780
 //
-// Optional autobahn.config.json in [dir]:
+// Optional autobahn.config.json NEXT TO THIS FILE (not in the vault):
 //   {
-//     "backlog": "BACKLOG.md",           // the board file
-//     "docs": ["PLAN.md", "NOTES.md"],   // read-only tabs (default: every *.md in dir)
-//     "lanes": ["Now", "Next", "Later"], // ## headings that open lanes
-//     "prefix": "TASK",                  // id prefix minted by New card
+//     "root": "~/Documents/LLMVault/wiki",
+//     "boards": [{ "name": "Workblocks", "dir": "workblocks",
+//                  "lanes": ["queued", "executing", "waiting", "done"] }],
+//     "docs": ["workblocks/README.md"],
 //     "port": 4780
 //   }
 import { createServer } from 'node:http'
 import { readFile, writeFile, readdir } from 'node:fs/promises'
-import { execFile } from 'node:child_process'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const ROOT = path.resolve(process.argv[2] || '.')
-
-const DEFAULTS = { backlog: 'BACKLOG.md', docs: null, lanes: ['Now', 'Next', 'Later'], prefix: 'TASK', port: 4780 }
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const DEFAULTS = {
+  root: path.join(process.env.HOME ?? '', 'Documents/LLMVault/wiki'),
+  boards: [
+    { name: 'Workblocks', dir: 'workblocks', lanes: ['queued', 'executing', 'waiting', 'done'] },
+    { name: 'Projects', dir: 'projects', lanes: ['considering', 'active', 'done'] },
+  ],
+  docs: ['workblocks/README.md'],
+  port: 4780,
+}
 let config = { ...DEFAULTS }
 try {
-  config = { ...DEFAULTS, ...JSON.parse(await readFile(path.join(ROOT, 'autobahn.config.json'), 'utf8')) }
+  config = { ...DEFAULTS, ...JSON.parse(await readFile(path.join(HERE, 'autobahn.config.json'), 'utf8')) }
 } catch { /* no config file — defaults */ }
 
-const BACKLOG = path.join(ROOT, config.backlog)
-const LANES = config.lanes
+const ROOT = path.resolve((process.argv[2] || config.root).replace(/^~/, process.env.HOME ?? '~'))
 const PORT = config.port
 
-// Docs shown as read-only tabs: config list, or every .md in the directory.
-async function listDocs() {
-  if (Array.isArray(config.docs)) return config.docs
-  const entries = await readdir(ROOT).catch(() => [])
-  return entries.filter((f) => f.endsWith('.md') && f !== config.backlog).sort().slice(0, 12)
-}
-
-// A card id is PREFIX-NUMBER for any A-Z prefix (TASK-12, RAMS-057, ABC-9).
-const CARD_ID = /^([A-Z][A-Z0-9]*-\d+) · (.+)$/
-const DONE_RE = /\b(SHIPPED|DONE|RETRACTED|RETIRED)\b/
-// Statuses written in prose ("done (7/4) — ...", "shipped 3.2") count as
-// done when the status LINE starts with the verdict.
-const DONE_STATUS_RE = /^(done|shipped|resolved|retracted|retired|sent|superseded)\b/i
-
-function parseBacklog(md) {
-  const lines = md.split('\n')
-  const heads = []
-  lines.forEach((l, i) => { if (/^## /.test(l)) heads.push({ i, text: l.slice(3).trim() }) })
-  const spanEnd = (idx) => (idx + 1 < heads.length ? heads[idx + 1].i : lines.length)
-
-  let lane = null
-  const items = []
-  const pinned = [] // non-card ## blocks inside the FIRST lane render as pinned notes
-  heads.forEach((h, idx) => {
-    if (LANES.includes(h.text)) { lane = h.text; return }
-    const m = h.text.match(CARD_ID)
-    const body = lines.slice(h.i + 1, spanEnd(idx)).join('\n')
-    const field = (name) => (body.match(new RegExp(`\\*\\*${name}:\\*\\*\\s*([^\\n]+)`)) || [])[1]?.replace(/\*/g, '').trim() ?? null
-    const status = field('Status')
-    if (m) {
-      items.push({
-        id: m[1], title: m[2], lane, status,
-        done: DONE_RE.test(h.text) || DONE_RE.test(status ?? '') || DONE_STATUS_RE.test(status ?? ''),
-        blocked: /^blocked/i.test(status ?? ''),
-        line: h.i + 1,
-        body: body.trim(),
-        size: field('Size'),
-        tags: field('Tags'),
-      })
-    } else if (lane === LANES[0]) {
-      pinned.push({ title: h.text, body: body.trim() })
-    }
-  })
-  return { items, pinned }
-}
-
-// Move the whole `## CARD` block: before `beforeId` when given (the
-// within-lane reorder), otherwise to the END of the target lane.
-async function moveItem(id, toLane, beforeId) {
-  if (!LANES.includes(toLane)) throw new Error('bad lane')
-  if (beforeId === id) return
-  const md = await readFile(BACKLOG, 'utf8')
-  const lines = md.split('\n')
-  const heads = []
-  lines.forEach((l, i) => { if (/^## /.test(l)) heads.push({ i, text: l.slice(3).trim() }) })
-  const idx = heads.findIndex((h) => h.text.startsWith(id + ' ·'))
-  if (idx === -1) throw new Error('item not found')
-  const start = heads[idx].i
-  const end = idx + 1 < heads.length ? heads[idx + 1].i : lines.length
-  const block = lines.slice(start, end)
-  const rest = [...lines.slice(0, start), ...lines.slice(end)]
-  const rheads = []
-  rest.forEach((l, i) => { if (/^## /.test(l)) rheads.push({ i, text: l.slice(3).trim() }) })
-  let insertAt
-  if (beforeId) {
-    const target = rheads.find((h) => h.text.startsWith(beforeId + ' ·'))
-    if (!target) throw new Error('drop target not found')
-    insertAt = target.i
-  } else {
-    const laneIdx = rheads.findIndex((h) => h.text === toLane)
-    if (laneIdx === -1) throw new Error('lane not found')
-    const nextLane = rheads.slice(laneIdx + 1).find((h) => LANES.includes(h.text))
-    insertAt = nextLane ? nextLane.i : rest.length
+// --- frontmatter: parse the `---` block into flat key/value attrs ------------
+function fm(src) {
+  if (!src.startsWith('---\n')) return { attrs: {}, body: src }
+  const end = src.indexOf('\n---', 3)
+  if (end === -1) return { attrs: {}, body: src }
+  const attrs = {}
+  for (const line of src.slice(4, end).split('\n')) {
+    const m = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/)
+    if (m) attrs[m[1]] = m[2].replace(/^"(.*)"$/, '$1').replace(/\\"/g, '"').trim()
   }
-  const out = [...rest.slice(0, insertAt), ...block, ...rest.slice(insertAt)]
-  await writeFile(BACKLOG, out.join('\n'))
+  return { attrs, body: src.slice(src.indexOf('\n', end + 1) + 1) }
 }
 
-// Mint the next PREFIX number and append a template card to a lane.
-async function newCard(title, lane) {
-  if (!LANES.includes(lane)) throw new Error('bad lane')
-  if (!title || !title.trim()) throw new Error('title required')
-  const md = await readFile(BACKLOG, 'utf8')
-  let max = 0
-  for (const m of md.matchAll(new RegExp(`^## ${config.prefix}-(\\d+)`, 'gm'))) max = Math.max(max, Number(m[1]))
-  const id = `${config.prefix}-${String(max + 1).padStart(3, '0')}`
+// Rewrite ONLY the status/updated lines of a file's frontmatter, byte-for-byte
+// elsewhere. Files without frontmatter get a minimal one prepended.
+function withStatus(src, status) {
   const today = new Date().toISOString().slice(0, 10)
-  const block = `## ${id} · ${title.trim()}
-- **Status:** open (carded ${today} via Autobahn)
-- **Size:** tbd
-- **Why:** tbd
-- **Spec:** tbd
-- **Done means:** tbd
+  if (!src.startsWith('---\n')) return `---\nstatus: ${status}\nupdated: ${today}\n---\n${src}`
+  const end = src.indexOf('\n---', 3)
+  let head = src.slice(4, end + 1)
+  const rest = src.slice(end + 1)
+  head = /^status:/m.test(head) ? head.replace(/^status:.*$/m, `status: ${status}`) : head + `status: ${status}\n`
+  head = /^updated:/m.test(head) ? head.replace(/^updated:.*$/m, `updated: ${today}`) : head + `updated: ${today}\n`
+  return '---\n' + head + rest
+}
 
+const boardByName = (name) => config.boards.find((b) => b.name === name)
+const SAFE_ID = /^[\w][\w.À-ſ-]*$/ // filename slug, no slashes or dots-walk
+
+async function loadBoard(b) {
+  const dir = path.join(ROOT, b.dir)
+  const files = (await readdir(dir)).filter((f) => f.endsWith('.md') && f !== 'README.md')
+  const items = []
+  for (const f of files) {
+    const { attrs, body } = fm(await readFile(path.join(dir, f), 'utf8'))
+    if (/^readme$/i.test(attrs.type ?? attrs.kind ?? '')) continue
+    const id = f.slice(0, -3)
+    const status = (attrs.status ?? '').trim()
+    items.push({
+      id,
+      title: attrs.title || (body.match(/^# (.+)$/m) || [])[1] || id,
+      lane: b.lanes.includes(status) ? status : b.lanes[0],
+      unmapped: status && !b.lanes.includes(status) ? status : null,
+      note: attrs.status_note || null,
+      date: (id.match(/^\d{4}-\d{2}-\d{2}/) || [])[0] || attrs.created || attrs.date || null,
+      updated: attrs.updated || null,
+      tags: (attrs.tags || '').replace(/^\[|\]$/g, '').split(',')[0].trim() || null,
+      body: body.trim(),
+    })
+  }
+  // Date-slugged dirs (workblocks) read newest-first; the rest alphabetically.
+  const dated = items.length && items.every((i) => /^\d{4}-/.test(i.id))
+  items.sort((a, z) => (dated ? z.id.localeCompare(a.id) : a.id.localeCompare(z.id)))
+  return items
+}
+
+async function moveItem(b, id, toLane) {
+  if (!b.lanes.includes(toLane)) throw new Error('bad lane')
+  if (!SAFE_ID.test(id)) throw new Error('bad id')
+  const p = path.join(ROOT, b.dir, id + '.md')
+  await writeFile(p, withStatus(await readFile(p, 'utf8'), toLane))
+}
+
+async function newCard(b, title, lane) {
+  if (!b.lanes.includes(lane)) throw new Error('bad lane')
+  if (!title || !title.trim()) throw new Error('title required')
+  const today = new Date().toISOString().slice(0, 10)
+  const slug = title.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'sin-titulo'
+  const existing = await readdir(path.join(ROOT, b.dir))
+  let id = b.dir === 'workblocks' ? `${today}-${slug}` : slug
+  for (let n = 2; existing.includes(id + '.md'); n++) id = id.replace(/(-\d+)?$/, `-${n}`)
+  const kind = b.dir.replace(/s$/, '')
+  const q = /[:#'"—]/.test(title) ? `"${title.trim().replace(/"/g, '\\"')}"` : title.trim()
+  const md = `---
+type: ${kind}
+title: ${q}
+created: ${today}
+updated: ${today}
+status: ${lane}
+---
+
+# ${title.trim()}
+
+_(carded ${today} vía Autobahn — completá el plan)_
 `
-  const lines = md.split('\n')
-  const heads = []
-  lines.forEach((l, i) => { if (/^## /.test(l)) heads.push({ i, text: l.slice(3).trim() }) })
-  const laneIdx = heads.findIndex((h) => h.text === lane)
-  if (laneIdx === -1) throw new Error('lane not found')
-  const nextLane = heads.slice(laneIdx + 1).find((h) => LANES.includes(h.text))
-  const insertAt = nextLane ? nextLane.i : lines.length
-  const out = [...lines.slice(0, insertAt), ...block.split('\n'), ...lines.slice(insertAt)]
-  await writeFile(BACKLOG, out.join('\n'))
+  await writeFile(path.join(ROOT, b.dir, id + '.md'), md, { flag: 'wx' })
   return id
 }
-
-const gitDirty = () => new Promise((res) => {
-  execFile('git', ['-C', ROOT, 'status', '--porcelain'], (e, out) => res(e ? '' : out.trim()))
-})
 
 const send = (res, code, body, type = 'application/json') => {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' })
@@ -150,41 +138,44 @@ createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://localhost:${PORT}`)
     if (url.pathname === '/') {
-      return send(res, 200, await readFile(new URL('./index.html', import.meta.url), 'utf8'), 'text/html')
+      return send(res, 200, await readFile(path.join(HERE, 'index.html'), 'utf8'), 'text/html')
     }
     if (url.pathname === '/api/board') {
-      const md = await readFile(BACKLOG, 'utf8')
+      const b = boardByName(url.searchParams.get('board')) || config.boards[0]
       return send(res, 200, {
-        ...parseBacklog(md),
-        docs: await listDocs(),
-        lanes: LANES,
-        backlog: config.backlog,
-        root: path.basename(ROOT),
-        dirty: await gitDirty(),
+        board: b.name,
+        boards: config.boards.map((x) => x.name),
+        lanes: b.lanes,
+        items: await loadBoard(b),
+        docs: config.docs ?? [],
+        root: path.basename(ROOT) + '/' + b.dir,
       })
     }
     if (url.pathname === '/api/doc') {
       const name = url.searchParams.get('name')
-      const docs = await listDocs()
-      if (!docs.includes(name) && name !== config.backlog) return send(res, 400, { error: 'unknown doc' })
+      if (!(config.docs ?? []).includes(name)) return send(res, 400, { error: 'unknown doc' })
       return send(res, 200, await readFile(path.join(ROOT, name), 'utf8'), 'text/plain; charset=utf-8')
     }
     if (url.pathname === '/api/move' && req.method === 'POST') {
       let body = ''
       for await (const c of req) body += c
-      const { id, toLane, beforeId } = JSON.parse(body)
-      await moveItem(id, toLane, beforeId)
+      const { board, id, toLane } = JSON.parse(body)
+      const b = boardByName(board)
+      if (!b) throw new Error('bad board')
+      await moveItem(b, id, toLane)
       return send(res, 200, { ok: true })
     }
     if (url.pathname === '/api/new' && req.method === 'POST') {
       let body = ''
       for await (const c of req) body += c
-      const { title, lane } = JSON.parse(body)
-      const id = await newCard(title, lane || LANES[1] || LANES[0])
+      const { board, title, lane } = JSON.parse(body)
+      const b = boardByName(board)
+      if (!b) throw new Error('bad board')
+      const id = await newCard(b, title, lane || b.lanes[0])
       return send(res, 200, { ok: true, id })
     }
     send(res, 404, { error: 'not found' })
   } catch (e) {
     send(res, 500, { error: String(e.message || e) })
   }
-}).listen(PORT, () => console.log(`Autobahn → http://localhost:${PORT}  (board: ${BACKLOG})`))
+}).listen(PORT, '127.0.0.1', () => console.log(`Autobahn → http://localhost:${PORT}  (root: ${ROOT})`))
