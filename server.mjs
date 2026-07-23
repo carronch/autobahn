@@ -124,6 +124,10 @@ status: ${lane}
 # ${title.trim()}
 
 _(carded ${today} vía Autobahn — completá el plan)_
+
+## Known unknowns
+
+- [ ] _(qué falta decidir, qué solo se descubre ejecutando, y quién lo resuelve)_
 `
   await writeFile(path.join(ROOT, b.dir, id + '.md'), md, { flag: 'wx' })
   return id
