@@ -38,6 +38,13 @@
   .card .chip.warn { color: #DEDEDE; }
   .card h4 { font-size: 15.5px; font-weight: 400; line-height: 1.4; text-wrap: pretty; }
   .card .st { margin-top: 7px; font-size: 13px; color: #969A9C; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .card .talk { float: right; font: 11px var(--mono); color: #6f7375; background: none; border: 1px solid #242626; border-radius: 6px; padding: 2px 8px; cursor: pointer; opacity: 0; transition: opacity 0.12s; }
+  .card:hover .talk { opacity: 1; }
+  .card .talk:hover { color: #DEDEDE; border-color: #3B3D3D; }
+  .card .talk:disabled { opacity: 0.4; cursor: wait; }
+  .lb-talk { margin: 0 0 16px; font: 13px var(--mono); color: #DEDEDE; background: #1a1b1b; border: 1px solid #242626; border-radius: 8px; padding: 7px 14px; cursor: pointer; }
+  .lb-talk:hover { background: #242626; }
+  .lb-talk:disabled { opacity: 0.4; cursor: wait; }
   .card.done { opacity: 0.55; }
   .card.done h4 { color: #969A9C; }
 
@@ -91,6 +98,7 @@
     </button>
     <div class="lb-head"><span class="id" id="lb-id"></span><h2 id="lb-title"></h2></div>
     <div class="lb-lane" id="lb-lane"></div>
+    <button type="button" class="lb-talk" id="lb-talk">✳ Resolver con Claude</button>
     <div class="lb-body doc" id="lb-body"></div>
   </div>
 </div>
@@ -192,6 +200,7 @@ async function render() {
     const items = state.items.filter(i => i.lane === lane)
     const cards = items.map(i => `
       <div class="card ${lane === last ? 'done' : ''}" draggable="true" data-id="${esc(i.id)}" onclick="openCard('${esc(i.id)}')">
+        <button type="button" class="talk" title="Abrir una terminal con Claude sobre esta carta" onclick="talk(event, '${esc(i.id)}')">✳ claude</button>
         <span class="id">${esc(i.date ?? i.id)}</span><span class="meta-chips">${i.tags ? `<span class="chip">${esc(i.tags)}</span>` : ''}${i.unmapped ? `<span class="chip warn">status: ${esc(i.unmapped)}</span>` : ''}</span>
         <h4>${esc(i.title)}</h4>
         ${i.note ? `<div class="st">${esc(i.note)}</div>` : ''}
@@ -213,6 +222,16 @@ async function newCard() {
   openCard(d.id)
 }
 
+async function talk(ev, id) {
+  ev.stopPropagation()
+  const btn = ev.currentTarget
+  btn.disabled = true
+  try {
+    const r = await fetch('/api/claude', { method: 'POST', body: JSON.stringify({ board, id }) })
+    if (!r.ok) alert('no pude abrir la terminal: ' + ((await r.json()).error || r.status))
+  } finally { btn.disabled = false }
+}
+
 let dragged = false
 function openCard(id) {
   if (dragged) { dragged = false; return }
@@ -222,6 +241,7 @@ function openCard(id) {
   document.getElementById('lb-title').innerHTML = inline(item.title)
   document.getElementById('lb-lane').textContent = item.lane + (item.updated ? ' · updated ' + item.updated : '')
   document.getElementById('lb-body').innerHTML = md(item.body || '')
+  document.getElementById('lb-talk').onclick = (e) => talk(e, item.id)
   document.getElementById('lb').classList.add('open')
 }
 function closeCard() { document.getElementById('lb').classList.remove('open') }

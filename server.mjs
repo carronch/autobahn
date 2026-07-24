@@ -17,6 +17,7 @@
 //     "port": 4780
 //   }
 import { createServer } from 'node:http'
+import { execFile } from 'node:child_process'
 import { readFile, writeFile, readdir } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -133,6 +134,26 @@ _(carded ${today} vía Autobahn — completá el plan)_
   return id
 }
 
+// Open Terminal.app with an interactive `claude` session on one card's file.
+// The card id is SAFE_ID-validated and the file must exist, so the only
+// dynamic text reaching the shell goes through single-quote escaping.
+async function talkAbout(b, id) {
+  if (!SAFE_ID.test(id)) throw new Error('bad id')
+  const rel = path.join(path.basename(ROOT), b.dir, id + '.md')
+  await readFile(path.join(ROOT, b.dir, id + '.md')) // existence check
+  const vault = path.dirname(ROOT)
+  const prompt = `Leé ${rel} y ayudame a resolver ese workblock: repasá el plan y su estado, decime qué falta o qué está bloqueado, y ejecutemos juntos lo que siga.`
+  const shq = (s) => `'` + s.replace(/'/g, `'"'"'`) + `'`
+  const shellCmd = `cd ${shq(vault)} && claude ${shq(prompt)}`
+  const asq = (s) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  await new Promise((resolve, reject) =>
+    execFile('osascript',
+      ['-e', `tell application "Terminal" to activate`,
+       '-e', `tell application "Terminal" to do script "${asq(shellCmd)}"`],
+      (err) => (err ? reject(err) : resolve()))
+  )
+}
+
 const send = (res, code, body, type = 'application/json') => {
   res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' })
   res.end(type === 'application/json' ? JSON.stringify(body) : body)
@@ -167,6 +188,15 @@ createServer(async (req, res) => {
       const b = boardByName(board)
       if (!b) throw new Error('bad board')
       await moveItem(b, id, toLane)
+      return send(res, 200, { ok: true })
+    }
+    if (url.pathname === '/api/claude' && req.method === 'POST') {
+      let body = ''
+      for await (const c of req) body += c
+      const { board, id } = JSON.parse(body)
+      const b = boardByName(board)
+      if (!b) throw new Error('bad board')
+      await talkAbout(b, id)
       return send(res, 200, { ok: true })
     }
     if (url.pathname === '/api/new' && req.method === 'POST') {
