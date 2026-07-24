@@ -142,7 +142,7 @@ async function talkAbout(b, id) {
   const rel = path.join(path.basename(ROOT), b.dir, id + '.md')
   await readFile(path.join(ROOT, b.dir, id + '.md')) // existence check
   const vault = path.dirname(ROOT)
-  const prompt = `Leé ${rel} y ayudame a resolver ese workblock: repasá el plan y su estado, decime qué falta o qué está bloqueado, y ejecutemos juntos lo que siga.`
+  const prompt = `Read ${rel} and help me resolve that workblock: review the plan and its current state, tell me what's missing or blocked, and let's execute the next steps together.`
   const shq = (s) => `'` + s.replace(/'/g, `'"'"'`) + `'`
   const shellCmd = `cd ${shq(vault)} && claude ${shq(prompt)}`
   const asq = (s) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
