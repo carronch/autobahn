@@ -47,6 +47,8 @@
   .lb-talk:disabled { opacity: 0.4; cursor: wait; }
   .card.done { opacity: 0.55; }
   .card.done h4 { color: #969A9C; }
+  .card.hot { border-left: 3px solid #E5484D; padding-left: 11px; }
+  .chip.hot { color: #FF8589; background: rgba(229,72,77,0.14); }
 
   .doc { max-width: 920px; font-size: 15px; line-height: 1.65; color: #C9CDCF; }
   .doc h1 { font-size: 36px; font-weight: 400; letter-spacing: -0.015em; color: #DEDEDE; margin: 8px 0 14px; }
@@ -198,10 +200,11 @@ async function render() {
   const last = state.lanes[state.lanes.length - 1]
   const lanes = state.lanes.map(lane => {
     const items = state.items.filter(i => i.lane === lane)
+      .sort((a, b) => (b.priority === 'high') - (a.priority === 'high'))
     const cards = items.map(i => `
-      <div class="card ${lane === last ? 'done' : ''}" draggable="true" data-id="${esc(i.id)}" onclick="openCard('${esc(i.id)}')">
+      <div class="card ${lane === last ? 'done' : ''} ${i.priority === 'high' ? 'hot' : ''}" draggable="true" data-id="${esc(i.id)}" onclick="openCard('${esc(i.id)}')">
         <button type="button" class="talk" title="Abrir una terminal con Claude sobre esta carta" onclick="talk(event, '${esc(i.id)}')">✳ claude</button>
-        <span class="id">${esc(i.date ?? i.id)}</span><span class="meta-chips">${i.tags ? `<span class="chip">${esc(i.tags)}</span>` : ''}${i.unmapped ? `<span class="chip warn">status: ${esc(i.unmapped)}</span>` : ''}</span>
+        <span class="id">${esc(i.date ?? i.id)}</span><span class="meta-chips">${i.priority === 'high' ? '<span class="chip hot">🔥 alta</span>' : ''}${i.tags ? `<span class="chip">${esc(i.tags)}</span>` : ''}${i.unmapped ? `<span class="chip warn">status: ${esc(i.unmapped)}</span>` : ''}</span>
         <h4>${esc(i.title)}</h4>
         ${i.note ? `<div class="st">${esc(i.note)}</div>` : ''}
       </div>`).join('')
