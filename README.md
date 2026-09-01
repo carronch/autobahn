@@ -17,7 +17,7 @@ node server.mjs            # → http://localhost:4780 (bound to 127.0.0.1 only)
 node server.mjs ~/other/wiki
 ```
 
-Zsh alias installed: `kanban`. Filtra por proyecto con el selector en la UI o `?focus=slug`. Filtra por proyecto con el selector en la UI o `?focus=slug` (ej. `?focus=mawamba`).
+Zsh alias installed: `kanban`. Filtra por proyecto con el selector en la UI o `?focus=slug` (ej. `?focus=my-project`).
 
 ## Boards y lanes
 

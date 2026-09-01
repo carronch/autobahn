@@ -143,7 +143,7 @@ async function load() {
   document.getElementById('hint').textContent =
     'Cada carta es un archivo .md — la columna es su `status:` en el frontmatter. ' +
     'Arrastrá una carta a otra columna y el archivo se reescribe (solo status + updated). ' +
-    'Hacé clic en una carta para ver el plan completo. Filtra por proyecto con el selector o `?focus=mawamba`.'
+    'Hacé clic en una carta para ver el plan completo. Filtra por proyecto con el selector o `?focus=my-project`.'
   renderFocusSelect()
   renderFilterNote()
   renderTabs()
@@ -259,7 +259,7 @@ function md(src) {
 }
 
 // The chip shows the FIRST tag of the card's frontmatter `tags:`; map known project slugs to pretty labels.
-const TAG_LABELS = { 'territorio-de-zaguates': '🐕 Territorio' }
+const TAG_LABELS = { 'my-project': 'My Project', 'my-project-2': 'My Project 2' }
 
 const LANE_LABELS = { 'someday-maybe': 'Someday/Maybe', 'active': 'Active', 'waiting-for': 'Waiting For', 'done': 'Done', 'considering': 'Considering' }
 const laneLabel = l => LANE_LABELS[l] ?? l

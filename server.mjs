@@ -15,7 +15,7 @@
 //                  "lanes": ["someday-maybe", "active", "waiting-for", "done"] }],
 //     "docs": ["next-actions.md", "workblocks/README.md"],
 //     "port": 4780,
-//     "focus": "mawamba"   // optional default project filter (?focus= overrides)
+//     "focus": "my-project"   // optional default project filter (?focus= overrides)
 //   }
 import { createServer } from 'node:http'
 import { execFile } from 'node:child_process'
@@ -71,7 +71,7 @@ const boardByName = (name) => config.boards.find((b) => b.name === name)
 const SAFE_ID = /^[\w][\w.À-ſ-]*$/ // filename slug, no slashes or dots-walk
 
 const GENERIC_TAGS = new Set(['workblock', 'rollup'])
-const FOCUS_LABELS = { 'territorio-de-zaguates': '🐕 Territorio', 'mini-bodegas-san-pedro': 'Mini Bodegas SP' }
+const FOCUS_LABELS = { 'my-project': 'My Project', 'my-project-2': 'My Project 2' }
 
 function parseTags(raw) {
   if (!raw) return []
