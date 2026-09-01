@@ -1,4 +1,4 @@
-# Autobahn — LLMVault fork
+# Kanban — LLMVault fork of Autobahn
 
 Kanban board over a **directory of markdown files**. Fork of
 [rams-design/autobahn](https://github.com/rams-design/autobahn) (upstream boards a single
@@ -17,23 +17,23 @@ node server.mjs            # → http://localhost:4780 (bound to 127.0.0.1 only)
 node server.mjs ~/other/wiki
 ```
 
-Zsh alias installed: `kanban`.
+Zsh alias installed: `kanban`. Filtra por proyecto con el selector en la UI o `?focus=slug`. Filtra por proyecto con el selector en la UI o `?focus=slug` (ej. `?focus=mawamba`).
 
 ## Boards y lanes
 
 | Board      | dir               | lanes                                  |
 |------------|-------------------|----------------------------------------|
-| Workblocks | `wiki/workblocks` | `queued → executing → waiting → done`  |
+| Workblocks | `wiki/workblocks` | `someday-maybe → active → waiting-for → done`  |
 | Projects   | `wiki/projects`   | `considering → active → done`          |
 
-Config en `autobahn.config.json` **junto al server** (nunca dentro del vault).
+Config en `kanban.config.json` **junto al server** (nunca dentro del vault).
 
 ## Frontmatter contract
 
 ```yaml
 ---
 title: "Nombre de la carta"     # fallback: primer «# heading», luego el filename
-status: queued                  # la lane; valores fuera del set caen a la primera lane (chip de aviso)
+status: someday-maybe                  # la lane; valores fuera del set caen a la primera lane (chip de aviso)
 status_note: "detalle opcional" # se muestra bajo el título de la carta
 created: 2026-07-22
 updated: 2026-07-22             # el server lo bumpea en cada drag
@@ -45,6 +45,6 @@ updated: 2026-07-22             # el server lo bumpea en cada drag
 
 ## Upstream
 
-Remote `origin` = este fork (privado); remote `upstream` = rams-design/autobahn.
+Remote `origin` = este fork; remote `upstream` = rams-design/autobahn.
 Este fork reemplaza la gramática BACKLOG.md del upstream por el contrato de frontmatter
 de arriba. MIT (LICENSE del upstream se conserva).

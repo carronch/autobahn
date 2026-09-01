@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>LLMVault · tablero</title>
+<title>Kanban</title>
 <style>
   * { box-sizing: border-box; margin: 0; }
   html { color-scheme: dark; }
@@ -13,7 +13,14 @@
   }
   body { background: #050505; color: #DEDEDE; font: 15px/1.5 var(--sans); font-synthesis: none; }
   .wrap { width: 100%; padding: 0 28px 96px; }
-  header { display: flex; align-items: baseline; gap: 14px; padding: 28px 0 8px; }
+  header { display: flex; align-items: baseline; gap: 14px; padding: 28px 0 8px; flex-wrap: wrap; }
+  .header-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+  .focus-wrap { display: flex; align-items: center; gap: 8px; }
+  .focus-label { font-size: 12px; color: #3B3D3D; }
+  .focus-wrap select { font: 13px var(--sans); color: #DEDEDE; background: #1E2020; border: 0; border-radius: 999px; padding: 6px 12px; cursor: pointer; max-width: 220px; }
+  .focus-wrap select:focus { outline: 1px solid #3B3D3D; }
+  .filter-note { font-size: 13px; color: #969A9C; padding: 0 0 18px; }
+
   header h1 { font-size: 30px; font-weight: 400; letter-spacing: -0.015em; }
   header .root { font-size: 13px; color: #3B3D3D; font-family: var(--mono); }
   nav { display: flex; gap: 4px; flex-wrap: wrap; padding: 10px 0 22px; }
@@ -85,11 +92,21 @@
 <body>
 <div class="wrap">
   <header>
-    <h1>LLMVault</h1>
+    <h1>Kanban</h1>
     <span class="root" id="root"></span>
-    <button type="button" class="newcard" onclick="newCard()">Nueva carta</button>
+
+    <div class="header-actions">
+      <label class="focus-wrap">
+        <span class="focus-label">Proyecto</span>
+        <select id="focus" onchange="setFocus(this.value)" aria-label="Filtrar por proyecto">
+          <option value="">Todos</option>
+        </select>
+      </label>
+      <button type="button" class="newcard" onclick="newCard()">Nueva carta</button>
+    </div>
   </header>
   <nav id="tabs"></nav>
+  <p class="filter-note" id="filter-note" hidden></p>
   <div id="view"></div>
   <p class="hint" id="hint"></p>
 </div>
@@ -106,24 +123,73 @@
 </div>
 <script>
 let state = null, board = null, tab = null
+let focus = null
+if (new URLSearchParams(location.search).has('focus')) focus = new URLSearchParams(location.search).get('focus') || ''
+
+function boardQuery() {
+  const q = new URLSearchParams()
+  q.set('board', board ?? '')
+  if (focus !== null) q.set('focus', focus)
+  return q
+}
 
 async function load() {
-  state = await (await fetch('/api/board?board=' + encodeURIComponent(board ?? ''))).json()
+  state = await (await fetch('/api/board?' + boardQuery())).json()
+  if (focus === null) focus = state.focus || ''
+  syncFocusUrl()
   board = state.board
   if (tab === null) tab = board
   document.getElementById('root').textContent = state.root
   document.getElementById('hint').textContent =
     'Cada carta es un archivo .md — la columna es su `status:` en el frontmatter. ' +
     'Arrastrá una carta a otra columna y el archivo se reescribe (solo status + updated). ' +
-    'Hacé clic en una carta para ver el plan completo.'
+    'Hacé clic en una carta para ver el plan completo. Filtra por proyecto con el selector o `?focus=mawamba`.'
+  renderFocusSelect()
+  renderFilterNote()
   renderTabs()
   render()
 }
 
+
+function syncFocusUrl() {
+  const url = new URL(location.href)
+  if (focus === null) url.searchParams.delete('focus')
+  else if (focus) url.searchParams.set('focus', focus)
+  else url.searchParams.set('focus', '')
+  history.replaceState(null, '', url)
+}
+
+function setFocus(value) {
+  focus = value || ''
+  syncFocusUrl()
+  load()
+}
+
+function renderFocusSelect() {
+  const sel = document.getElementById('focus')
+  const opts = (state.focusOptions || []).map(o =>
+    `<option value="${esc(o.slug)}"${o.slug === focus ? ' selected' : ''}>${esc(o.label)}</option>`).join('')
+  sel.innerHTML = '<option value="">Todos</option>' + opts
+}
+
+function renderFilterNote() {
+  const el = document.getElementById('filter-note')
+  if (!focus) {
+    el.hidden = true
+    return
+  }
+  const label = (state.focusOptions || []).find(o => o.slug === focus)?.label || focus
+  const shown = state.items.length
+  const total = state.totalItems ?? shown
+  el.textContent = `Mostrando ${shown} de ${total} cartas · ${label}`
+  el.hidden = false
+}
+
 function renderTabs() {
+  const TAB_LABELS = { 'next-actions.md': '🔴 Next Actions' }
   const tabs = [...state.boards, ...state.docs]
   document.getElementById('tabs').innerHTML = tabs.map(t =>
-    `<button class="${t === tab ? 'on' : ''}" onclick="setTab('${t}')">${esc(t.replace(/\.md$/, ''))}</button>`).join('')
+    `<button class="${t === tab ? 'on' : ''}" onclick="setTab('${t}')">${esc(TAB_LABELS[t] ?? t.replace(/\.md$/, ''))}</button>`).join('')
 }
 async function setTab(t) {
   tab = t
@@ -140,6 +206,8 @@ function inline(s) {
     .replace(/`([^`]+)`/g, (_, c) => '<code>' + c + '</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/\[\[wiki\/workblocks\/([^\]|]+)\|([^\]]+)\]\]/g, (_, id, label) =>
+      `<a href="#" onclick="openCard('${id}');return false">${label}</a>`)
     .replace(/\[\[([^\]]+)\]\]/g, '<code>$1</code>')
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
 }
@@ -190,10 +258,18 @@ function md(src) {
   return out.join('\n')
 }
 
+// The chip shows the FIRST tag of the card's frontmatter `tags:`; map known project slugs to pretty labels.
+const TAG_LABELS = { 'territorio-de-zaguates': '🐕 Territorio' }
+
+const LANE_LABELS = { 'someday-maybe': 'Someday/Maybe', 'active': 'Active', 'waiting-for': 'Waiting For', 'done': 'Done', 'considering': 'Considering' }
+const laneLabel = l => LANE_LABELS[l] ?? l
+
 async function render() {
   const view = document.getElementById('view')
   if (tab !== board) {
-    const src = await (await fetch('/api/doc?name=' + encodeURIComponent(tab))).text()
+    const docQ = new URLSearchParams({ name: tab })
+    if (focus !== null && focus) docQ.set('focus', focus)
+    const src = await (await fetch('/api/doc?' + docQ)).text()
     view.innerHTML = '<div class="doc">' + md(src) + '</div>'
     return
   }
@@ -204,11 +280,11 @@ async function render() {
     const cards = items.map(i => `
       <div class="card ${lane === last ? 'done' : ''} ${i.priority === 'high' ? 'hot' : ''}" draggable="true" data-id="${esc(i.id)}" onclick="openCard('${esc(i.id)}')">
         <button type="button" class="talk" title="Abrir una terminal con Claude sobre esta carta" onclick="talk(event, '${esc(i.id)}')">✳ claude</button>
-        <span class="id">${esc(i.date ?? i.id)}</span><span class="meta-chips">${i.priority === 'high' ? '<span class="chip hot">🔥 alta</span>' : ''}${i.tags ? `<span class="chip">${esc(i.tags)}</span>` : ''}${i.unmapped ? `<span class="chip warn">status: ${esc(i.unmapped)}</span>` : ''}</span>
+        <span class="id">${esc(i.date ?? i.id)}</span><span class="meta-chips">${i.priority === 'high' ? '<span class="chip hot">🔥 alta</span>' : ''}${i.tags ? `<span class="chip">${esc(TAG_LABELS[i.tags] ?? i.tags)}</span>` : ''}${i.unmapped ? `<span class="chip warn">status: ${esc(i.unmapped)}</span>` : ''}</span>
         <h4>${esc(i.title)}</h4>
         ${i.note ? `<div class="st">${esc(i.note)}</div>` : ''}
       </div>`).join('')
-    return `<div class="lane" data-lane="${lane}"><h2>${lane} <span class="n">${items.length}</span></h2>${cards}</div>`
+    return `<div class="lane" data-lane="${lane}"><h2>${laneLabel(lane)} <span class="n">${items.length}</span></h2>${cards}</div>`
   }).join('')
   view.innerHTML = `<div class="lanes" style="--n:${state.lanes.length}">${lanes}</div>`
   wireDnd()
@@ -216,7 +292,7 @@ async function render() {
 
 async function newCard() {
   const lane = state.lanes[0]
-  const title = prompt(`Título de la nueva carta (entra en «${lane}» de ${board}):`)
+  const title = prompt(`Título de la nueva carta (entra en «${laneLabel(lane)}» de ${board}):`)
   if (!title || !title.trim()) return
   const r = await fetch('/api/new', { method: 'POST', body: JSON.stringify({ board, title: title.trim(), lane }) })
   const d = await r.json()

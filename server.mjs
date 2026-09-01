@@ -1,4 +1,4 @@
-// Autobahn — vault fork: a kanban board over a directory of markdown files.
+// Kanban — vault fork of Autobahn: a kanban board over a directory of markdown files.
 // Upstream (github.com/rams-design/autobahn) boards one BACKLOG.md with lanes
 // as ## headings. This fork boards LLMVault: each card is a FILE
 // (wiki/workblocks/*.md, wiki/projects/*.md) and the lane is the `status:`
@@ -8,13 +8,14 @@
 //
 //   node server.mjs [wikiDir]    → http://localhost:4780
 //
-// Optional autobahn.config.json NEXT TO THIS FILE (not in the vault):
+// Optional kanban.config.json NEXT TO THIS FILE (not in the vault):
 //   {
 //     "root": "~/Documents/LLMVault/wiki",
 //     "boards": [{ "name": "Workblocks", "dir": "workblocks",
-//                  "lanes": ["queued", "executing", "waiting", "done"] }],
-//     "docs": ["workblocks/README.md"],
-//     "port": 4780
+//                  "lanes": ["someday-maybe", "active", "waiting-for", "done"] }],
+//     "docs": ["next-actions.md", "workblocks/README.md"],
+//     "port": 4780,
+//     "focus": "mawamba"   // optional default project filter (?focus= overrides)
 //   }
 import { createServer } from 'node:http'
 import { execFile } from 'node:child_process'
@@ -26,15 +27,15 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULTS = {
   root: path.join(process.env.HOME ?? '', 'Documents/LLMVault/wiki'),
   boards: [
-    { name: 'Workblocks', dir: 'workblocks', lanes: ['queued', 'executing', 'waiting', 'done'] },
+    { name: 'Workblocks', dir: 'workblocks', lanes: ['someday-maybe', 'active', 'waiting-for', 'done'] },
     { name: 'Projects', dir: 'projects', lanes: ['considering', 'active', 'done'] },
   ],
-  docs: ['workblocks/README.md'],
+  docs: ['next-actions.md', 'workblocks/README.md'],
   port: 4780,
 }
 let config = { ...DEFAULTS }
 try {
-  config = { ...DEFAULTS, ...JSON.parse(await readFile(path.join(HERE, 'autobahn.config.json'), 'utf8')) }
+  config = { ...DEFAULTS, ...JSON.parse(await readFile(path.join(HERE, 'kanban.config.json'), 'utf8')) }
 } catch { /* no config file — defaults */ }
 
 const ROOT = path.resolve((process.argv[2] || config.root).replace(/^~/, process.env.HOME ?? '~'))
@@ -69,6 +70,80 @@ function withStatus(src, status) {
 const boardByName = (name) => config.boards.find((b) => b.name === name)
 const SAFE_ID = /^[\w][\w.À-ſ-]*$/ // filename slug, no slashes or dots-walk
 
+const GENERIC_TAGS = new Set(['workblock', 'rollup'])
+const FOCUS_LABELS = { 'territorio-de-zaguates': '🐕 Territorio', 'mini-bodegas-san-pedro': 'Mini Bodegas SP' }
+
+function parseTags(raw) {
+  if (!raw) return []
+  return raw.replace(/^\[|\]$/g, '').split(',').map((t) => t.trim()).filter(Boolean)
+}
+
+function matchesFocus(item, focus) {
+  const f = focus.toLowerCase()
+  if (item.id.toLowerCase().includes(f)) return true
+  if (item.slug?.toLowerCase().includes(f)) return true
+  if (item.title.toLowerCase().includes(f)) return true
+  return item.allTags.some((t) => t.toLowerCase().includes(f))
+}
+
+function filterNextActions(src, focus) {
+  if (!focus) return src
+  const f = focus.toLowerCase()
+  const lines = src.split('\n')
+  const preamble = []
+  const sections = []
+  let i = 0
+  while (i < lines.length && !lines[i].startsWith('## ')) {
+    preamble.push(lines[i])
+    i++
+  }
+  while (i < lines.length) {
+    if (!lines[i].startsWith('## ')) { i++; continue }
+    const h2 = lines[i]
+    i++
+    const blocks = []
+    while (i < lines.length && !lines[i].startsWith('## ')) {
+      if (lines[i].startsWith('### ')) {
+        const h3 = lines[i]
+        i++
+        const blockLines = []
+        while (i < lines.length && !lines[i].startsWith('### ') && !lines[i].startsWith('## ')) {
+          blockLines.push(lines[i])
+          i++
+        }
+        const id = (h3.match(/wiki\/workblocks\/([^|]+)/) || [])[1] || ''
+        if (id.toLowerCase().includes(f) || h3.toLowerCase().includes(f)) blocks.push({ h3, blockLines })
+      } else i++
+    }
+    if (blocks.length) sections.push({ h2, blocks })
+  }
+  const out = [...preamble]
+  for (const sec of sections) {
+    out.push(sec.h2, '')
+    for (const b of sec.blocks) {
+      out.push(b.h3)
+      out.push(...b.blockLines, '')
+    }
+  }
+  return out.join('\n')
+}
+
+async function buildFocusOptions() {
+  const opts = new Map()
+  for (const b of config.boards) {
+    for (const item of await loadBoard(b)) {
+      if (b.dir === 'projects') opts.set(item.id, item.title)
+      for (const tag of item.allTags) {
+        if (!GENERIC_TAGS.has(tag)) opts.set(tag, FOCUS_LABELS[tag] ?? tag)
+      }
+    }
+  }
+  return [...opts.entries()]
+    .map(([slug, label]) => ({ slug, label }))
+    .sort((a, z) => a.label.localeCompare(z.label, 'es'))
+}
+
+
 async function loadBoard(b) {
   const dir = path.join(ROOT, b.dir)
   const files = (await readdir(dir)).filter((f) => f.endsWith('.md') && f !== 'README.md')
@@ -78,15 +153,18 @@ async function loadBoard(b) {
     if (/^readme$/i.test(attrs.type ?? attrs.kind ?? '')) continue
     const id = f.slice(0, -3)
     const status = (attrs.status ?? '').trim()
+    const allTags = parseTags(attrs.tags)
     items.push({
       id,
+      slug: (attrs.slug || '').trim() || null,
       title: attrs.title || (body.match(/^# (.+)$/m) || [])[1] || id,
       lane: b.lanes.includes(status) ? status : b.lanes[0],
       unmapped: status && !b.lanes.includes(status) ? status : null,
       note: attrs.status_note || null,
       date: (id.match(/^\d{4}-\d{2}-\d{2}/) || [])[0] || attrs.created || attrs.date || null,
       updated: attrs.updated || null,
-      tags: (attrs.tags || '').replace(/^\[|\]$/g, '').split(',')[0].trim() || null,
+      allTags,
+      tags: allTags.find((t) => !GENERIC_TAGS.has(t)) || allTags[0] || null,
       priority: (attrs.priority || '').trim().toLowerCase() || null,
       body: body.trim(),
     })
@@ -125,7 +203,7 @@ status: ${lane}
 
 # ${title.trim()}
 
-_(carded ${today} vía Autobahn — completá el plan)_
+_(carded ${today} vía Kanban — completá el plan)_
 
 ## Known unknowns
 
@@ -143,7 +221,7 @@ async function talkAbout(b, id) {
   const rel = path.join(path.basename(ROOT), b.dir, id + '.md')
   await readFile(path.join(ROOT, b.dir, id + '.md')) // existence check
   const vault = path.dirname(ROOT)
-  const prompt = `Read ${rel} and help me resolve that workblock: review the plan and its current state, tell me what's missing or blocked, and let's execute the next steps together.`
+  const prompt = `Read ${rel} so you have its full context. Don't take any action yet — confirm in one line what it's about, then wait for my instructions.`
   const shq = (s) => `'` + s.replace(/'/g, `'"'"'`) + `'`
   const shellCmd = `cd ${shq(vault)} && claude ${shq(prompt)}`
   const asq = (s) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
@@ -168,11 +246,17 @@ createServer(async (req, res) => {
     }
     if (url.pathname === '/api/board') {
       const b = boardByName(url.searchParams.get('board')) || config.boards[0]
+      const focus = url.searchParams.has('focus') ? (url.searchParams.get('focus') || null) : (config.focus || null)
+      const allItems = await loadBoard(b)
+      const items = focus ? allItems.filter((i) => matchesFocus(i, focus)) : allItems
       return send(res, 200, {
         board: b.name,
         boards: config.boards.map((x) => x.name),
         lanes: b.lanes,
-        items: await loadBoard(b),
+        items,
+        totalItems: allItems.length,
+        focus,
+        focusOptions: await buildFocusOptions(),
         docs: config.docs ?? [],
         root: path.basename(ROOT) + '/' + b.dir,
       })
@@ -180,7 +264,15 @@ createServer(async (req, res) => {
     if (url.pathname === '/api/doc') {
       const name = url.searchParams.get('name')
       if (!(config.docs ?? []).includes(name)) return send(res, 400, { error: 'unknown doc' })
-      return send(res, 200, await readFile(path.join(ROOT, name), 'utf8'), 'text/plain; charset=utf-8')
+      const focus = url.searchParams.has('focus') ? (url.searchParams.get('focus') || null) : (config.focus || null)
+      if (name === 'next-actions.md') {
+        // Regenerate from the cards on every view; on failure serve the last version.
+        const gen = path.join(path.dirname(ROOT), 'scripts', 'generate-next-actions.sh')
+        await new Promise(resolve => execFile('/bin/bash', [gen], () => resolve()))
+      }
+      let text = await readFile(path.join(ROOT, name), 'utf8')
+      if (focus && name === 'next-actions.md') text = filterNextActions(text, focus)
+      return send(res, 200, text, 'text/plain; charset=utf-8')
     }
     if (url.pathname === '/api/move' && req.method === 'POST') {
       let body = ''
@@ -213,4 +305,11 @@ createServer(async (req, res) => {
   } catch (e) {
     send(res, 500, { error: String(e.message || e) })
   }
-}).listen(PORT, '127.0.0.1', () => console.log(`Autobahn → http://localhost:${PORT}  (root: ${ROOT})`))
+}).listen(PORT, '127.0.0.1', () => console.log(`Kanban → http://localhost:${PORT}  (root: ${ROOT})`))
+  .on('error', (e) => {
+    if (e.code === 'EADDRINUSE') {
+      console.error(`Kanban ya está corriendo en http://localhost:${PORT} — abrí esa URL (no hace falta otro server).`)
+      process.exit(1)
+    }
+    throw e
+  })
